@@ -1,0 +1,15 @@
+{
+    "_comment": "本文件为示例假想数据，仅用于验证引擎数据管道。实际游戏数据需由团队从游戏战斗引擎数据模型或统一数据中台接入。",
+    "enemies": [
+        {
+            "id": "sample_boss_01",
+            "name": "示例·强敌",
+            "speed": 120,
+            "toughness": 60,
+            "weakness_list": [
+                "fire",
+                "wind"
+            ]
+        }
+    ]
+}

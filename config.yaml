@@ -1,0 +1,27 @@
+# 文件路径配置
+paths:
+  character_data: "data/characters/"
+  enemy_data: "data/enemies/"
+  skill_data: "data/skills/"
+  output_reports: "output/reports/"
+  logs: "output/logs/"
+
+# 游戏机制常量
+game_constants:
+  base_action_value: 10000
+  default_sp_max: 5
+  toughness_unit_base: 10
+
+# 搜索参数
+search_params:
+  default_window_av: 250
+  tolerance_gamma: 0.95
+  energy_safe_alpha: 0.2
+  energy_penalty_lambda: 1.0
+  sp_penalty_lambda: 2.0
+  max_recursion_depth: 3
+
+# 受击分析参数
+hit_params:
+  max_hit_branches: 2
+  default_hit_energy: 0.0
