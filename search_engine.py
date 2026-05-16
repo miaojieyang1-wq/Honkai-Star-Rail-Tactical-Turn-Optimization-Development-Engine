@@ -237,8 +237,8 @@ class SearchEngine:
     def search_optimal(self, state_0, delta_t=None, gamma=None, t_start=None, t_end=None):
         """Search for the best path and score inside an action-value window."""
         gamma = _default_gamma(gamma)
+        self._reset_window_damage(state_0)
         initial_state = deepcopy(state_0)
-        self._reset_window_damage(initial_state)
         if t_start is None:
             t_start = self._window_start(initial_state)
         if t_end is None:
