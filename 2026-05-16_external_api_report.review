@@ -1,0 +1,26 @@
+# 审查报告：外部 API 与战术报告补齐
+
+## 范围
+
+- `external_api.py`
+- `tactical_report.py`
+- `battle_engine.py`
+- `smoke_test.py`
+- `README.md`
+- `ARCHITECTURE.md`
+- `CHANGELOG.md`
+
+## 结论
+
+本次修改把作品介绍中的外部 API 接口层和 LLM 输出层落到代码与文档中。新增内容未改变核心搜索数学流程，只通过可选依赖注入扩展 `BattleEngine`。
+
+## 风险
+
+- `MockDamageCalcApi` 使用示例元数据和能量值验证接口形状，不代表真实伤害公式。
+- 真实社区工具或企业 API 接入后，需要补充网络超时、重试、鉴权和数据格式校验。
+- 当前项目中仍有多个历史文件超过 300 行，后续若继续合规治理，应拆分核心模块。
+
+## 建议
+
+- 下一轮优先新增真实 API 适配器示例配置，而不是继续扩大 Mock。
+- 若要作为作品集展示，建议增加一份端到端示例脚本，输出 Markdown 战术建议书。

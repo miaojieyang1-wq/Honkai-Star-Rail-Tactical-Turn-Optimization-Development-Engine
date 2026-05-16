@@ -2,7 +2,9 @@
 """Core smoke tests for the tactical battle engine."""
 
 from battle_engine import BattleEngine, BattleEngineConfigurationError, HitModule, plan_optimal
+from external_api import build_mock_api_bundle
 from search_engine import ActionNode
+from tactical_report import TemplateLLMReportClient, build_tactical_report
 from state import BattleState, StateError, UnitType
 
 
@@ -72,12 +74,26 @@ def test_hit_module_uses_character_registry():
     _assert(hit_targets == {CHARACTER_A, CHARACTER_B}, "hit branches must cover C")
 
 
+def test_external_api_and_report_flow():
+    """Mock external APIs and report generation must form a visible product loop."""
+    state = _registered_state()
+    state.action_queue.update_insert(CHARACTER_A, 10.0, UnitType.CHARACTER)
+    api_bundle = build_mock_api_bundle()
+    engine = BattleEngine(initial_state=state, external_api_bundle=api_bundle)
+    advice = engine.plan_optimal(state, delta_t=100.0)
+    report = build_tactical_report(advice, TemplateLLMReportClient())
+    markdown = report.to_markdown()
+    _assert("星穹铁道战术建议书" in markdown, "report title is missing")
+    _assert("LLM 润色版" in markdown, "LLM report section is missing")
+
+
 def main():
     """Run the smoke-test suite."""
     test_character_registry_lock()
     test_empty_window_resets_damage()
     test_plan_requires_character_registry()
     test_hit_module_uses_character_registry()
+    test_external_api_and_report_flow()
     print("smoke tests passed")
 
 

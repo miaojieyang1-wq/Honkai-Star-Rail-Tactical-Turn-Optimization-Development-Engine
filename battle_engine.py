@@ -407,6 +407,7 @@ class BattleEngine:
         damage_upper_bound_provider=None,
         hit_branch_provider=None,
         damage_executor=None,
+        external_api_bundle=None,
         team_character_unit_ids=None,
     ):
         self.state = initial_state or BattleState()
@@ -417,9 +418,16 @@ class BattleEngine:
         if self.action_definition_provider is None:
             LOGGER.warning("动作定义提供器未接入，默认仅执行基础资源合法性约束。")
         self.action_event_builder = action_event_builder
+        self.external_api_bundle = external_api_bundle
         self.damage_upper_bound_provider = damage_upper_bound_provider
         self.hit_branch_provider = hit_branch_provider
         self.damage_executor = damage_executor
+        if self.external_api_bundle is not None:
+            self.damage_executor = self.damage_executor or self.external_api_bundle.damage_executor
+            self.damage_upper_bound_provider = (
+                self.damage_upper_bound_provider
+                or self.external_api_bundle.damage_upper_bound_provider
+            )
 
         self.event_bus = EventBus()
         self.modules = self._register_core_modules(self.state, self.event_bus)
