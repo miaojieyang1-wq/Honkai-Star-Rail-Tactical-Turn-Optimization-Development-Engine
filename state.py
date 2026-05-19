@@ -9,6 +9,7 @@ and cross-module coordination belong to dedicated handlers and event channels.
 
 from dataclasses import dataclass, field
 from enum import Enum
+from math import isfinite
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from config_loader import get_config
@@ -64,6 +65,14 @@ class ActionQueue:
     _items: List[ActionItem] = field(default_factory=list)
 
     def __post_init__(self):
+        self._items = [
+            ActionItem(
+                item.unit_id,
+                _validate_non_negative_finite_float(item.action_value, "action_value"),
+                _validate_unit_type(item.unit_type),
+            )
+            for item in self._items
+        ]
         self._sort_items()
 
     def get_items(self):
@@ -85,16 +94,19 @@ class ActionQueue:
 
     def update_insert(self, unit_id, action_value, unit_type):
         """Insert a new queue item, preserving action value order."""
-        self._items.append(ActionItem(unit_id, float(action_value), unit_type))
+        action_value = _validate_non_negative_finite_float(action_value, "action_value")
+        unit_type = _validate_unit_type(unit_type)
+        self._items.append(ActionItem(unit_id, action_value, unit_type))
         self._sort_items()
 
     def update_action_value(self, unit_id, action_value):
         """Update a unit action value and re-sort the queue."""
+        action_value = _validate_non_negative_finite_float(action_value, "action_value")
         for index, item in enumerate(self._items):
             if item.unit_id == unit_id:
                 self._items[index] = ActionItem(
                     item.unit_id,
-                    float(action_value),
+                    action_value,
                     item.unit_type,
                 )
                 self._sort_items()
@@ -109,14 +121,15 @@ class ActionQueue:
 
     def update_prune_before(self, action_value, inclusive=True):
         """Remove queue items before a time point."""
+        action_value = _validate_non_negative_finite_float(action_value, "action_value")
         original_count = len(self._items)
         if inclusive:
             self._items = [
-                item for item in self._items if item.action_value > float(action_value)
+                item for item in self._items if item.action_value > action_value
             ]
         else:
             self._items = [
-                item for item in self._items if item.action_value >= float(action_value)
+                item for item in self._items if item.action_value >= action_value
             ]
         return len(self._items) != original_count
 
@@ -146,6 +159,8 @@ class EnergyVector:
     def update_energy_max(self, unit_id, energy_max):
         """Set a unit maximum energy and clamp current energy to it."""
         energy_max = float(energy_max)
+        if energy_max < 0.0:
+            raise StateError("energy_max must be non-negative")
         self._energy_max[unit_id] = energy_max
         self._energy[unit_id] = min(self.get_energy(unit_id), energy_max)
 
@@ -205,15 +220,44 @@ class SPTracker:
 
     def update_sp_max(self, sp_max):
         """Set maximum skill points and clamp current skill points."""
-        self._sp_max = int(sp_max)
+        _validate_non_negative_int(sp_max, "sp_max")
+        if sp_max < 0:
+            raise StateError("sp_max must be non-negative")
+        self._sp_max = sp_max
         self._current_sp = self._clamp_sp(self._current_sp)
 
     def update_set_current_sp(self, current_sp):
         """Set current skill points within [0, SP_max]."""
-        self._current_sp = self._clamp_sp(int(current_sp))
+        _validate_non_negative_int(current_sp, "current_sp")
+        self._current_sp = self._clamp_sp(current_sp)
 
     def _clamp_sp(self, value):
         return max(0, min(int(value), self._sp_max))
+
+
+def _validate_non_negative_int(value, name):
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise StateError("{0} must be an integer".format(name))
+    if value < 0:
+        raise StateError("{0} must be non-negative".format(name))
+
+
+def _validate_non_negative_finite_float(value, name):
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise StateError("{0} must be numeric".format(name)) from exc
+    if not isfinite(value):
+        raise StateError("{0} must be finite".format(name))
+    if value < 0.0:
+        raise StateError("{0} must be non-negative".format(name))
+    return value
+
+
+def _validate_unit_type(unit_type):
+    if not isinstance(unit_type, UnitType):
+        raise StateError("unit_type must be a UnitType")
+    return unit_type
 
 
 @dataclass
@@ -251,6 +295,8 @@ class ToughnessVector:
     def update_toughness_max(self, enemy_id, toughness_max):
         """Set maximum toughness and clamp current toughness to it."""
         toughness_max = float(toughness_max)
+        if toughness_max < 0.0:
+            raise StateError("toughness_max must be non-negative")
         self._toughness_max[enemy_id] = toughness_max
         current = self._toughness.get(enemy_id, toughness_max)
         self._toughness[enemy_id] = min(max(0.0, current), toughness_max)
@@ -272,13 +318,16 @@ class ToughnessVector:
         ignore_weakness_flag=False,
     ):
         """Reduce toughness only when not locked and weakness rules allow it."""
+        amount = float(amount)
+        if amount < 0.0:
+            raise StateError("toughness reduction amount must be non-negative")
         if self.get_is_locked(enemy_id):
             return self.get_toughness(enemy_id)
         if not ignore_weakness_flag:
             weaknesses = tuple(target_weakness_list or ())
             if attack_element is None or attack_element not in weaknesses:
                 return self.get_toughness(enemy_id)
-        new_value = max(0.0, self.get_toughness(enemy_id) - float(amount))
+        new_value = max(0.0, self.get_toughness(enemy_id) - amount)
         self._toughness[enemy_id] = new_value
         return new_value
 

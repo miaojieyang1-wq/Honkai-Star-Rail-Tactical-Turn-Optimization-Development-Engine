@@ -36,9 +36,21 @@ class ActionDefinition:
     target_weakness_list: Tuple[str, ...] = tuple()
     ignore_weakness: bool = False
     sp_cost: int = 0
+    energy_cost: Optional[float] = None
     requires_full_energy: bool = False
     reduces_toughness: bool = False
+    toughness_damage: float = 0.0
     tags: Tuple[str, ...] = tuple()
+
+    def __post_init__(self):
+        if not isinstance(self.sp_cost, int):
+            raise TypeError("sp_cost must be an integer")
+        if self.sp_cost < 0:
+            raise ValueError("sp_cost must be non-negative")
+        if self.energy_cost is not None and self.energy_cost < 0:
+            raise ValueError("energy_cost must be non-negative")
+        if self.toughness_damage < 0:
+            raise ValueError("toughness_damage must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -80,6 +92,14 @@ class HitBranch:
     weight: float = 1.0
     probability: float = 0.0
     metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.hit_energy_gain < 0.0:
+            raise ValueError("hit_energy_gain must be non-negative")
+        if self.weight < 0.0:
+            raise ValueError("weight must be non-negative")
+        if self.probability < 0.0 or self.probability > 1.0:
+            raise ValueError("probability must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -173,11 +193,17 @@ class SearchEngine:
         self.damage_upper_bound_provider = damage_upper_bound_provider
         self.hit_branch_provider = hit_branch_provider
         self.hit_branch_applier = hit_branch_applier
-        self.energy_penalty_lambda = float(
-            _required_config("search_params.energy_penalty_lambda")
+        self.energy_penalty_lambda = _non_negative_config_float(
+            "search_params.energy_penalty_lambda"
         )
-        self.sp_penalty_lambda = float(_required_config("search_params.sp_penalty_lambda"))
-        self.energy_safe_alpha = float(_required_config("search_params.energy_safe_alpha"))
+        self.sp_penalty_lambda = _non_negative_config_float(
+            "search_params.sp_penalty_lambda"
+        )
+        self.energy_safe_alpha = _bounded_config_float(
+            "search_params.energy_safe_alpha",
+            0.0,
+            1.0,
+        )
 
     def extract_action_window(self, state, delta_t=None, t_start=None, t_end=None):
         """Extract friendly action nodes with t in [t_start, t_end]."""
@@ -292,13 +318,19 @@ class SearchEngine:
             return SearchResult(tuple(), self._score_state(initial_state))
         return best_result
 
-    def handle_hit_branches(self, state_0, delta_t=None, max_branches=None):
+    def handle_hit_branches(self, state_0, delta_t=None, max_branches=None, gamma=None):
         """Return baseline and deterministic hit-branch tactical plans."""
         delta_t = _default_window_av(delta_t)
         max_branches = _default_hit_branches(max_branches)
         original_start = self._window_start(state_0)
         original_end = original_start + delta_t
-        baseline = self.search_optimal(state_0, delta_t, t_start=original_start, t_end=original_end)
+        baseline = self.search_optimal(
+            state_0,
+            delta_t,
+            gamma=gamma,
+            t_start=original_start,
+            t_end=original_end,
+        )
         enemy_nodes = self._extract_enemy_window(state_0, original_start, original_end)
 
         if not enemy_nodes:
@@ -321,6 +353,7 @@ class SearchEngine:
             result = self.search_optimal(
                 branched_state,
                 delta_t,
+                gamma=gamma,
                 t_start=branch.enemy_action_value,
                 t_end=original_end,
             )
@@ -361,7 +394,9 @@ class SearchEngine:
             return self._order_events(self.action_event_builder(action, state))
 
         if action.action_type is ActionType.BASIC_ATTACK:
-            return (
+            return _events_with_metadata(
+                action,
+                state,
                 Event(
                     EventType.BASIC_ATTACK_SP_RECOVER,
                     {"unit_id": action.unit_id, "amount": 1},
@@ -369,14 +404,16 @@ class SearchEngine:
                 ),
             )
         if action.action_type is ActionType.SKILL:
-            return (
+            return _events_with_metadata(
+                action,
+                state,
                 Event(
                     EventType.SKILL_SP_CONSUME,
-                    {"unit_id": action.unit_id, "amount": 1},
+                    {"unit_id": action.unit_id, "amount": _skill_sp_cost(action)},
                     "search_engine",
                 ),
             )
-        return tuple()
+        return _events_with_metadata(action, state)
 
     def _order_events(self, events):
         priority = {
@@ -418,7 +455,10 @@ class SearchEngine:
     def _max_theoretical_damage(self, unit_id, state):
         if self.damage_upper_bound_provider is None:
             return 0.0
-        return float(self.damage_upper_bound_provider(unit_id, state))
+        upper_bound = float(self.damage_upper_bound_provider(unit_id, state))
+        if upper_bound < 0.0:
+            raise ValueError("damage upper bound must be non-negative")
+        return upper_bound
 
     def _get_action_definitions(self, unit_id, state):
         if self.action_definition_provider is not None:
@@ -461,12 +501,14 @@ class SearchEngine:
                 return {
                     "attack_type": definition.attack_type,
                     "element": definition.element,
+                    "energy_cost": definition.energy_cost,
                     "target_id": definition.target_id,
                     "target_weakness_list": definition.target_weakness_list,
                     "ignore_weakness": definition.ignore_weakness,
                     "sp_cost": definition.sp_cost,
                     "requires_full_energy": definition.requires_full_energy,
                     "reduces_toughness": definition.reduces_toughness,
+                    "toughness_damage": definition.toughness_damage,
                     "tags": definition.tags,
                 }
         return {}
@@ -513,9 +555,9 @@ class SearchEngine:
         for buff in state.buffs.get_by_target(unit_id):
             for tag in buff.effect_tags:
                 if tag.startswith("base_taunt:"):
-                    base_taunt = float(tag.split(":", 1)[1])
+                    base_taunt = _non_negative_tag_value(tag, "base_taunt")
                 elif tag.startswith("taunt_modifier:"):
-                    taunt_modifier *= float(tag.split(":", 1)[1])
+                    taunt_modifier *= _non_negative_tag_value(tag, "taunt_modifier")
         if base_taunt is None:
             base_taunt = 1.0
         return base_taunt * taunt_modifier
@@ -557,7 +599,7 @@ def search_optimal(state_0, delta_t=None, gamma=None):
     raise SearchEngineConfigurationError("search_optimal requires a configured SearchEngine")
 
 
-def handle_hit_branches(state_0, delta_t=None, max_branches=None):
+def handle_hit_branches(state_0, delta_t=None, max_branches=None, gamma=None):
     """Module-level helper for hit branch handling with default wiring."""
     raise SearchEngineConfigurationError(
         "handle_hit_branches requires a configured SearchEngine"
@@ -599,19 +641,110 @@ def _required_config(key):
     return value
 
 
+def _non_negative_config_float(key):
+    value = float(_required_config(key))
+    if value < 0.0:
+        raise ValueError("{0} must be non-negative".format(key))
+    return value
+
+
+def _bounded_config_float(key, minimum, maximum):
+    value = float(_required_config(key))
+    if value < minimum or value > maximum:
+        raise ValueError("{0} must be in [{1}, {2}]".format(key, minimum, maximum))
+    return value
+
+
 def _default_window_av(delta_t):
     if delta_t is not None:
-        return float(delta_t)
-    return float(_required_config("search_params.default_window_av"))
+        value = float(delta_t)
+    else:
+        value = float(_required_config("search_params.default_window_av"))
+    if value < 0.0:
+        raise ValueError("delta_t must be non-negative")
+    return value
 
 
 def _default_gamma(gamma):
     if gamma is not None:
-        return float(gamma)
-    return float(_required_config("search_params.tolerance_gamma"))
+        value = float(gamma)
+    else:
+        value = float(_required_config("search_params.tolerance_gamma"))
+    if value <= 0.0 or value > 1.0:
+        raise ValueError("gamma must be in (0, 1]")
+    return value
 
 
 def _default_hit_branches(max_branches):
     if max_branches is not None:
-        return int(max_branches)
-    return int(_required_config("hit_params.max_hit_branches"))
+        value = int(max_branches)
+    else:
+        value = int(_required_config("hit_params.max_hit_branches"))
+    if value < 0:
+        raise ValueError("max_branches must be non-negative")
+    return value
+
+
+def _skill_sp_cost(action):
+    return int(action.metadata.get("sp_cost", 1))
+
+
+def _events_with_metadata(action, state, *events):
+    resource_events = tuple(events)
+    energy_event = _build_energy_cost_event(action, state)
+    if energy_event is not None:
+        resource_events = resource_events + (energy_event,)
+    return _events_with_toughness(action, *resource_events)
+
+
+def _build_energy_cost_event(action, state):
+    energy_cost = _energy_cost(action, state)
+    if energy_cost <= 0.0:
+        return None
+    return Event(
+        EventType.ACTION_ENERGY_GAIN,
+        {"unit_id": action.unit_id, "amount": -energy_cost},
+        "search_engine",
+    )
+
+
+def _energy_cost(action, state):
+    energy_cost = action.metadata.get("energy_cost")
+    if energy_cost is not None:
+        return float(energy_cost)
+    return 0.0
+
+
+def _events_with_toughness(action, *events):
+    toughness_event = _build_toughness_event(action)
+    if toughness_event is None:
+        return tuple(events)
+    return tuple(events) + (toughness_event,)
+
+
+def _build_toughness_event(action):
+    if not action.metadata.get("reduces_toughness"):
+        return None
+    target_id = action.metadata.get("target_id")
+    toughness_damage = float(action.metadata.get("toughness_damage", 0.0))
+    if target_id is None or toughness_damage <= 0.0:
+        return None
+    return Event(
+        EventType.TOUGHNESS_REDUCE_REQUEST,
+        {
+            "unit_id": action.unit_id,
+            "target_id": target_id,
+            "amount": toughness_damage,
+            "attack_element": action.metadata.get("element"),
+            "target_weakness_list": action.metadata.get("target_weakness_list", ()),
+            "ignore_weakness_flag": action.metadata.get("ignore_weakness", False),
+        },
+        "search_engine",
+    )
+
+
+def _non_negative_tag_value(tag, tag_name):
+    value = float(tag.split(":", 1)[1])
+    if value < 0.0:
+        raise ValueError("{0} must be non-negative".format(tag_name))
+    return value

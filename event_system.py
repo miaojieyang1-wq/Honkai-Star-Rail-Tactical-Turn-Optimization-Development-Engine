@@ -101,9 +101,12 @@ class DamageSettlementEvent(Event):
     def __init__(self, damage_type, damage_value, source=None, metadata=None):
         if not isinstance(damage_type, DamageType):
             damage_type = DamageType(damage_type)
+        damage_value = float(damage_value)
+        if damage_value < 0.0:
+            raise ValueError("damage_value must be non-negative")
         payload = {
             "damage_type": damage_type,
-            "damage_value": float(damage_value),
+            "damage_value": damage_value,
             "metadata": MappingProxyType(dict(metadata or {})),
         }
         object.__setattr__(self, "event_type", EventType.DAMAGE_SETTLEMENT)

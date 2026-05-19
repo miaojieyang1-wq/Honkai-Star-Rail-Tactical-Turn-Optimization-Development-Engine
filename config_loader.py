@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unified configuration access for environment and YAML settings."""
 
+import os
 from pathlib import Path
 
 
@@ -110,7 +111,9 @@ def _load_yaml_config(config_file):
 
 
 def get_env(key):
-    """Return a .env value by key, or None when it is not configured."""
+    """Return an environment value by key, preferring OS env over .env."""
+    if key in os.environ:
+        return os.environ[key]
     env_values = _parse_env_file(ENV_FILE)
     return env_values.get(key)
 

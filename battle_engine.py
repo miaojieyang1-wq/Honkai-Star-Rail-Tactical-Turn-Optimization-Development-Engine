@@ -155,7 +155,7 @@ class SPModule(SPModuleInterface):
         self._sp = state.skill_points
 
     def handle_event(self, event):
-        amount = int(event.payload.get("amount", 1))
+        amount = _non_negative_int_payload(event.payload.get("amount", 1), "amount")
 
         if event.event_type is EventType.SKILL_SP_CONSUME:
             for _ in range(amount):
@@ -201,9 +201,12 @@ class ToughnessModule(ToughnessModuleInterface):
                 )
         elif event.event_type is EventType.TOUGHNESS_RECOVER:
             current = self._toughness.get_toughness(enemy_id)
+            amount = float(event.payload.get("amount", 0.0))
+            if amount < 0.0:
+                raise ValueError("toughness recover amount must be non-negative")
             self._toughness.update_set_toughness(
                 enemy_id,
-                current + float(event.payload.get("amount", 0.0)),
+                current + amount,
             )
 
 
@@ -458,6 +461,7 @@ class BattleEngine:
             state,
             _default_window_av(delta_t),
             _default_hit_branches(max_hit_branches),
+            gamma,
         )
         final_state = self._simulate_path(state, branch_result.baseline.path)
         return self._format_tactical_advice(
@@ -596,7 +600,9 @@ class BattleEngine:
             return self.action_event_builder(action, state)
 
         if action.action_type is ActionType.BASIC_ATTACK:
-            return (
+            return _events_with_metadata(
+                action,
+                state,
                 Event(
                     EventType.BASIC_ATTACK_SP_RECOVER,
                     {"unit_id": action.unit_id, "amount": 1},
@@ -604,14 +610,16 @@ class BattleEngine:
                 ),
             )
         if action.action_type is ActionType.SKILL:
-            return (
+            return _events_with_metadata(
+                action,
+                state,
                 Event(
                     EventType.SKILL_SP_CONSUME,
-                    {"unit_id": action.unit_id, "amount": 1},
+                    {"unit_id": action.unit_id, "amount": _skill_sp_cost(action)},
                     "battle_engine",
                 ),
             )
-        return tuple()
+        return _events_with_metadata(action, state)
 
     def _apply_hit_branch(self, state, branch, event_bus):
         local_bus = EventBus()
@@ -741,9 +749,9 @@ def _taunt_weight(unit_id, state):
     for buff in state.buffs.get_by_target(unit_id):
         for tag in buff.effect_tags:
             if tag.startswith("base_taunt:"):
-                base_taunt = float(tag.split(":", 1)[1])
+                base_taunt = _non_negative_tag_value(tag, "base_taunt")
             elif tag.startswith("taunt_modifier:"):
-                taunt_modifier *= float(tag.split(":", 1)[1])
+                taunt_modifier *= _non_negative_tag_value(tag, "taunt_modifier")
     if base_taunt is None:
         base_taunt = 1.0
     return base_taunt * taunt_modifier
@@ -758,17 +766,102 @@ def _required_config(key):
 
 def _default_window_av(delta_t):
     if delta_t is not None:
-        return float(delta_t)
-    return float(_required_config("search_params.default_window_av"))
+        value = float(delta_t)
+    else:
+        value = float(_required_config("search_params.default_window_av"))
+    if value < 0.0:
+        raise ValueError("delta_t must be non-negative")
+    return value
 
 
 def _default_gamma(gamma):
     if gamma is not None:
-        return float(gamma)
-    return float(_required_config("search_params.tolerance_gamma"))
+        value = float(gamma)
+    else:
+        value = float(_required_config("search_params.tolerance_gamma"))
+    if value <= 0.0 or value > 1.0:
+        raise ValueError("gamma must be in (0, 1]")
+    return value
 
 
 def _default_hit_branches(max_hit_branches):
     if max_hit_branches is not None:
-        return int(max_hit_branches)
-    return int(_required_config("hit_params.max_hit_branches"))
+        value = int(max_hit_branches)
+    else:
+        value = int(_required_config("hit_params.max_hit_branches"))
+    if value < 0:
+        raise ValueError("max_hit_branches must be non-negative")
+    return value
+
+
+def _skill_sp_cost(action):
+    return int(action.metadata.get("sp_cost", 1))
+
+
+def _events_with_metadata(action, state, *events):
+    resource_events = tuple(events)
+    energy_event = _build_energy_cost_event(action, state)
+    if energy_event is not None:
+        resource_events = resource_events + (energy_event,)
+    return _events_with_toughness(action, *resource_events)
+
+
+def _build_energy_cost_event(action, state):
+    energy_cost = _energy_cost(action, state)
+    if energy_cost <= 0.0:
+        return None
+    return Event(
+        EventType.ACTION_ENERGY_GAIN,
+        {"unit_id": action.unit_id, "amount": -energy_cost},
+        "battle_engine",
+    )
+
+
+def _energy_cost(action, state):
+    energy_cost = action.metadata.get("energy_cost")
+    if energy_cost is not None:
+        return float(energy_cost)
+    return 0.0
+
+
+def _events_with_toughness(action, *events):
+    toughness_event = _build_toughness_event(action)
+    if toughness_event is None:
+        return tuple(events)
+    return tuple(events) + (toughness_event,)
+
+
+def _build_toughness_event(action):
+    if not action.metadata.get("reduces_toughness"):
+        return None
+    target_id = action.metadata.get("target_id")
+    toughness_damage = float(action.metadata.get("toughness_damage", 0.0))
+    if target_id is None or toughness_damage <= 0.0:
+        return None
+    return Event(
+        EventType.TOUGHNESS_REDUCE_REQUEST,
+        {
+            "unit_id": action.unit_id,
+            "target_id": target_id,
+            "amount": toughness_damage,
+            "attack_element": action.metadata.get("element"),
+            "target_weakness_list": action.metadata.get("target_weakness_list", ()),
+            "ignore_weakness_flag": action.metadata.get("ignore_weakness", False),
+        },
+        "battle_engine",
+    )
+
+
+def _non_negative_tag_value(tag, tag_name):
+    value = float(tag.split(":", 1)[1])
+    if value < 0.0:
+        raise ValueError("{0} must be non-negative".format(tag_name))
+    return value
+
+
+def _non_negative_int_payload(value, name):
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError("{0} must be an integer".format(name))
+    if value < 0:
+        raise ValueError("{0} must be non-negative".format(name))
+    return value
